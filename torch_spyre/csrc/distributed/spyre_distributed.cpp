@@ -37,6 +37,7 @@
 #include "../spyre_stream.h"
 #include "../spyre_tensor_impl.h"
 #include "spyre_collective_utils.h"
+#include "spyre_comms_lifetime.h"
 
 namespace spyre {
 
@@ -141,25 +142,13 @@ static spyre_comms::TensorDataTypeEnum torch_dtype_to_spyre_comms(
   }
 }
 
-// Ensure spyre_comms is initialized and return the world context.
-std::shared_ptr<spyre_comms::Context> ensure_context() {
-  auto context = spyre_comms::get_world_context();
-  if (context == nullptr) {
-    SPYRE_RUNTIME_DEBUG() << "Initializing spyre-comms library";
-    // Spyre Comms is initialised with the default Flex stream handle.  Because
-    // all collective operations are injected into that same stream, Flex
-    // enforces ordering between comms operations and any surrounding compute
-    // kernels.  This data-dependency ordering is what makes skipping
-    // work->wait() in spyre_wait_work_impl valid: the device itself serialises
-    // the collective result before any subsequent operation on the stream can
-    // consume it.  Torch Spyre calls synchronize() when exposing results to the
-    // user, so there is no gap at the end of the graph either.
-    spyre_comms::initialize_library(spyre::GlobalRuntime::get(),
-                                    spyre::getDefaultStreamRuntimeHandle());
-    context = spyre_comms::get_world_context();
-    TORCH_CHECK(context != nullptr, "Failed to get spyre-comms world context");
-  }
-  return context;
+// Drop all cached collective plans.  Called by the spyre-comms lifetime module
+// (see spyre_comms_lifetime.cpp) before the final finalize_library(), since the
+// plans reference the world context that finalize_library() tears down.
+// ensure_context() lives in spyre_comms_lifetime.cpp.
+void clear_wsi_cache() {
+  std::lock_guard<std::mutex> lock(wsi_cache_mutex_);
+  wsi_cache_.clear();
 }
 
 // Helper to convert reduce_op string to SpyreReductionOpType

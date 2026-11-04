@@ -18,7 +18,9 @@
 #include <pybind11/chrono.h>
 #include <torch/python.h>
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <spyre_comms.hpp>
 #include <torch/csrc/distributed/c10d/Backend.hpp>
@@ -171,9 +173,10 @@ class SpyreCCLBackend : public c10d::Backend {
   /*
    * Shutdown
    *
-   * shutdown() is a silent no-op: spyre_comms has no graceful-shutdown API,
-   * and the silent no-op matches the behaviour of the Gloo, MPI, and UCC
-   * backends. Finalization is handled by the SpyreCCLBackend destructor.
+   * shutdown() releases this backend's reference on the spyre_comms library
+   * (finalizing it when the last reference goes away). It is called by
+   * torch.distributed.destroy_process_group(), which makes finalization
+   * deterministic. It is idempotent; the destructor is only a safety net.
    *
    * abort() is not supported by the underlying spyre_comms library and will
    * throw SpyreCCLNotSupportedException.
@@ -181,7 +184,9 @@ class SpyreCCLBackend : public c10d::Backend {
   void abort() override {
     throw SpyreCCLNotSupportedException(getBackendName(), __func__);
   }
-  void shutdown() override {}
+  void shutdown() override {
+    release_comms_once();
+  }
 
   /*
    * Backend registration
@@ -192,6 +197,10 @@ class SpyreCCLBackend : public c10d::Backend {
 
  private:
   std::shared_ptr<spyre_comms::Context> group_context_;
+  uint64_t comms_epoch_ = 0;
+  std::atomic<bool> comms_released_{false};
+
+  void release_comms_once();
 
   [[nodiscard]] spyre_comms::TensorInfo getTensorInfo(const at::Tensor& input);
   void prepare_tensor(const at::Tensor& input_tensor,

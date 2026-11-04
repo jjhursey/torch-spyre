@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import atexit
 import os
+import sys
 import threading
 import types
 import importlib
@@ -351,14 +353,31 @@ def _autoload_impl():
     try:
         import torch.distributed as dist
 
+        _comms_atexit_registered = False
+
+        def _shutdown_comms_at_exit():
+            # Fallback for scripts that never call destroy_process_group().
+            # Never import at exit: if _C was not loaded, there is nothing to
+            # release. The C++ side is a no-op if comms was never initialized.
+            c_mod = sys.modules.get("torch_spyre._C")
+            if c_mod is not None and hasattr(c_mod, "shutdown_comms"):
+                c_mod.shutdown_comms()
+
         def _create_spyre_ccl_backend(store, rank, size, timeout):
+            nonlocal _comms_atexit_registered
             # Ensure the Spyre runtime is initialized before the CCL
             # backend constructor accesses the runtime and default stream.
             if not torch.spyre.is_initialized():
                 torch.spyre._impl._lazy_init()
             from torch_spyre._C import createSpyreCCLBackend
 
-            return createSpyreCCLBackend(store, rank, size, timeout)
+            backend = createSpyreCCLBackend(store, rank, size, timeout)
+            # Registered only in processes that actually create a SpyreCCL
+            # backend.
+            if not _comms_atexit_registered:
+                atexit.register(_shutdown_comms_at_exit)
+                _comms_atexit_registered = True
+            return backend
 
         dist.Backend.register_backend(
             DISTRIBUTED_BACKEND_NAME,

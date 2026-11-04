@@ -29,6 +29,7 @@
 #include "module.h"
 #include "spyre_allocator.h"
 #include "spyre_collective_utils.h"
+#include "spyre_comms_lifetime.h"
 #include "spyre_composite_address.h"
 #include "spyre_stream.h"
 #include "spyre_tensor_impl.h"
@@ -75,12 +76,15 @@ SpyreCCLBackend::SpyreCCLBackend(const c10::intrusive_ptr<::c10d::Store>& store,
 
   /*
    * Start the communication library
-   * Pass it the shared runtime library handle, and default stream.
+   * Takes one reference on the shared runtime library handle and default
+   * stream; released exactly once by release_comms_once().
    */
-  spyre_comms::initialize_library(spyre::GlobalRuntime::get(),
-                                  spyre::getDefaultStreamRuntimeHandle());
+  comms_epoch_ = spyre::acquire_comms();
   group_context_ = spyre_comms::get_world_context();
   if (nullptr == group_context_) {
+    // The destructor does not run when the constructor throws, so release the
+    // reference taken above here.
+    release_comms_once();
     std::string _err_msg =
         "[" + getBackendName() + "]: Failed to capture the world context";
     throw std::runtime_error(_err_msg);
@@ -88,7 +92,15 @@ SpyreCCLBackend::SpyreCCLBackend(const c10::intrusive_ptr<::c10d::Store>& store,
 }
 
 SpyreCCLBackend::~SpyreCCLBackend() {
-  spyre_comms::finalize_library();
+  // Safety net: normally already released by shutdown().
+  release_comms_once();
+}
+
+void SpyreCCLBackend::release_comms_once() {
+  if (!comms_released_.exchange(true)) {
+    group_context_.reset();
+    spyre::release_comms(comms_epoch_);
+  }
 }
 
 /* **********************************************

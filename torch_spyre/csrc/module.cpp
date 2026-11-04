@@ -45,6 +45,7 @@
 #include <pybind11/chrono.h>
 
 #include "distributed/spyre_ccl.hpp"
+#include "distributed/spyre_comms_lifetime.h"
 #endif
 
 #include "logging.h"
@@ -804,6 +805,9 @@ PYBIND11_MODULE(_C, m) {
   // Spyre CCL distributed backend
   m.def("createSpyreCCLBackend", &c10d::SpyreCCLBackend::createSpyreCCLBackend,
         "Create the Spyre Collective Library Backend object");
+  m.def("shutdown_comms", &spyre::shutdown_all,
+        "Release all outstanding spyre-comms references (no-op if the "
+        "library was never initialized). Used for process-exit cleanup.");
 #endif
 
   py::class_<spyre::JobPlan>(m, "JobPlan")
